@@ -1,0 +1,5 @@
+resolver: lts-12.2
+extra-deps:
+  - reactive-banana-1.2.0.0
+  - termbox-0.1.0
+  - termbox-banana-0.1.0
