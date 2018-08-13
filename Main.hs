@@ -1,5 +1,7 @@
 {-# language ScopedTypeVariables #-}
+{-# language InstanceSigs #-}
 {-# language RecursiveDo #-}
+{-# language OverloadedStrings #-}
 module Main where
 
 import Reactive.Banana
@@ -33,16 +35,34 @@ import Data.Text (Text)
 -- TODO: render battle log
 -- TODO: automatic tick
 
+
 data GameInput = Tick | BuyWorker | BuyFighter
   deriving (Eq)
 type GameView = (Int, Int, Int)
 type GameOutput = ()
+
+--------------------------------------------------------------------------------
+-- Units
+--------------------------------------------------------------------------------
+data Unit
+  = UnitFighter Fighter
+  | UnitMonster Monster
 
 data Fighter = Fighter Int
   deriving (Show)
 
 data Monster = Monster Int
   deriving (Show)
+
+inflictDamage :: Int -> Unit -> Maybe Unit
+inflictDamage x (UnitFighter (Fighter hp)) =
+  if hp > x
+    then Just (UnitFighter (Fighter (hp - x)))
+    else Nothing
+inflictDamage x (UnitMonster (Monster hp)) =
+  if hp > x
+    then Just (UnitMonster (Monster (hp - x)))
+    else Nothing
 
 --------------------------------------------------------------------------------
 -- Pure Functions
@@ -54,10 +74,32 @@ showCells (col, row) s =
     (zip [col..] (show s))
 
 resolveBattle
-  :: [Monster]
-  -> [Fighter]
-  -> Writer [Text] ([Monster], [Fighter])
-resolveBattle = undefined
+  :: [Unit] -- Acts first
+  -> [Unit]
+  -> Writer [Text] ([Unit], [Unit])
+resolveBattle [] theirs = do
+  tell ["They're beating on our base!"]
+  pure ([], theirs)
+resolveBattle ours [] = do
+  tell ["We are victorious!"]
+  pure (ours, [])
+resolveBattle ours@(ourFirst:ourRest) theirs@(theirFirst:theirRest) =
+  case inflictDamage (length ours) theirFirst of
+    Nothing -> do
+      -- log that their monster has died
+      tell ["A Monster has died"]
+      theyAttackUs theirRest
+    Just x ->
+      theyAttackUs (x:theirRest)
+  where
+    theyAttackUs :: [Unit] -> Writer [Text] ([Unit], [Unit])
+    theyAttackUs theirs =
+      case inflictDamage (length theirs) ourFirst of
+        Nothing -> do
+          tell ["Our Unit has died"]
+          pure (ourRest, theirs)
+        Just x ->
+          pure (x:ourRest, theirs)
 
 --------------------------------------------------------------------------------
 -- Game Logic
@@ -70,12 +112,12 @@ mkGame eGameInput = mdo
   let
     eTick = filterE (== Tick) eGameInput
 
-    eBattleResult :: Event ([Text], [Monster], [Fighter])
-    eBattleResult = f <$> bHorde <*> bFighters <@ eTick
+    eBattleResult :: Event ([Text], [Unit], [Unit])
+    eBattleResult = f <$> bFighters <*> bHorde <@ eTick
       where
-        f ms fs =
-          let ((ms', fs'), log) = runWriter (resolveBattle ms fs)
-          in (log, ms', fs')
+        f fs ms =
+          let ((fs', ms'), log) = runWriter (resolveBattle fs ms)
+          in (log, fs', ms')
 
     eAttemptBuyWorker = filterE (== BuyWorker) eGameInput
     eBuyWorker = whenE ((>= 50) <$> bMinerals) eAttemptBuyWorker
@@ -90,19 +132,19 @@ mkGame eGameInput = mdo
       [ (+1) <$ eBuyWorker
       ])
 
-  bFighters :: Behavior [Fighter] <-
+  bFighters :: Behavior [Unit] <-
     stepper [] (leftmost
-      [ (Fighter 20 :) <$> bFighters <@ eBuyFighter
+      [ (UnitFighter (Fighter 20) :) <$> bFighters <@ eBuyFighter
       , (\(_, _, fs) -> fs) <$> eBattleResult
       ])
 
-  bHorde :: Behavior [Monster] <-
+  bHorde :: Behavior [Unit] <-
     let
       eSpawn = filterJust (f <$> bNumTicks <@ eTick)
         where
           f = \n ->
             if n `mod` 100 == 0 && n /= 0
-              then Just [Monster 100]
+              then Just [UnitMonster (Monster 100)]
               else Nothing
     in
       stepper []
