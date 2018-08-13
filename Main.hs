@@ -5,6 +5,8 @@ module Main where
 import Reactive.Banana
 import Reactive.Banana.Frameworks
 import qualified Termbox.Banana as TB
+import Control.Monad.Trans.Writer
+import Data.Text (Text)
 
 -- +-----------------------+
 -- | Terminal              |
@@ -28,17 +30,38 @@ import qualified Termbox.Banana as TB
 -- TODO: model basic combat result
 -- TODO: decide win and loss conditions
 -- TODO: Consider fun mechanics
+-- TODO: render battle log
+-- TODO: automatic tick
 
-data GameInput = Tick | BuyWorker
+data GameInput = Tick | BuyWorker | BuyFighter
   deriving (Eq)
 type GameView = (Int, Int, Int)
 type GameOutput = ()
 
+data Fighter = Fighter Int
+  deriving (Show)
+
+data Monster = Monster Int
+  deriving (Show)
+
+--------------------------------------------------------------------------------
+-- Pure Functions
+--------------------------------------------------------------------------------
 showCells :: (Show a) => (Int, Int) -> a -> TB.Cells
 showCells (col, row) s =
   foldMap
     (\(i, x) -> TB.set i row (TB.Cell x mempty mempty))
     (zip [col..] (show s))
+
+resolveBattle
+  :: [Monster]
+  -> [Fighter]
+  -> Writer [Text] ([Monster], [Fighter])
+resolveBattle = undefined
+
+--------------------------------------------------------------------------------
+-- Game Logic
+--------------------------------------------------------------------------------
 
 mkGame
   :: Event GameInput
@@ -46,8 +69,19 @@ mkGame
 mkGame eGameInput = mdo
   let
     eTick = filterE (== Tick) eGameInput
+
+    eBattleResult :: Event ([Text], [Monster], [Fighter])
+    eBattleResult = f <$> bHorde <*> bFighters <@ eTick
+      where
+        f ms fs =
+          let ((ms', fs'), log) = runWriter (resolveBattle ms fs)
+          in (log, ms', fs')
+
     eAttemptBuyWorker = filterE (== BuyWorker) eGameInput
     eBuyWorker = whenE ((>= 50) <$> bMinerals) eAttemptBuyWorker
+
+    eAttemptBuyFighter = filterE (== BuyFighter) eGameInput
+    eBuyFighter = whenE ((>= 100) <$> bMinerals) eAttemptBuyFighter
 
   bNumTicks :: Behavior Int <- accumB 0 ((+1) <$ eTick)
 
@@ -55,6 +89,26 @@ mkGame eGameInput = mdo
     accumB 1 (unions
       [ (+1) <$ eBuyWorker
       ])
+
+  bFighters :: Behavior [Fighter] <-
+    stepper [] (leftmost
+      [ (Fighter 20 :) <$> bFighters <@ eBuyFighter
+      , (\(_, _, fs) -> fs) <$> eBattleResult
+      ])
+
+  bHorde :: Behavior [Monster] <-
+    let
+      eSpawn = filterJust (f <$> bNumTicks <@ eTick)
+        where
+          f = \n ->
+            if n `mod` 100 == 0 && n /= 0
+              then Just [Monster 100]
+              else Nothing
+    in
+      stepper []
+        (unionWith (++)
+          eSpawn
+          ((\(_, ms, _) -> ms) <$> eBattleResult))
 
   bMinerals :: Behavior Int <-
     accumB 25 (unions
@@ -72,6 +126,10 @@ leftmost = foldr (unionWith const) never
 
 -- leftmost [e1, e2, e3]
 
+--------------------------------------------------------------------------------
+-- Interface
+--------------------------------------------------------------------------------
+
 mkInterface
   :: Event TB.Event
   -> Behavior GameView
@@ -82,6 +140,7 @@ mkInterface eEvent bGameView _eGameOutput = do
     eGameInput = leftmost
       [ Tick <$ filterE (== TB.EventKey TB.KeySpace False) eEvent
       , BuyWorker <$ filterE (== TB.EventKey (TB.KeyChar 'w') False) eEvent
+      , BuyFighter <$ filterE (== TB.EventKey (TB.KeyChar 'f') False) eEvent
       ]
 
     bCells :: Behavior TB.Cells
